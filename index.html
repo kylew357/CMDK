@@ -27,8 +27,10 @@
   }
 
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
+  html, body { margin: 0; }
   body {
+    min-height: 100vh;
+    min-height: 100dvh;
     background: var(--bg);
     color: var(--fg);
     font-family: var(--font-display);
@@ -97,6 +99,47 @@
     letter-spacing: 0.04em;
     text-align: center;
   }
+
+  /* Switch history */
+  .log {
+    width: min(320px, 100%);
+    font-family: var(--font-mono);
+  }
+  .log h2 {
+    margin: 0 0 6px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .log ul { list-style: none; margin: 0; padding: 0; }
+  .log li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-top: 1px solid var(--track);
+    font-size: 0.8125rem;
+  }
+  .log .when { min-width: 0; color: var(--fg); }
+  .log .was { flex: none; color: var(--muted); }
+  .log .was b {
+    margin-left: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--track);
+    color: var(--fg);
+    font-weight: 500;
+  }
+  .log .empty {
+    padding: 10px 0;
+    border-top: 1px solid var(--track);
+    font-size: 0.8125rem;
+    color: var(--muted);
+  }
+
   /* Phones: big readout, switch kept the same size as on desktop. */
   @media (max-width: 600px) {
     body { padding: 16px 12px; }
@@ -118,26 +161,37 @@
     <span class="label label-dk">DK</span>
   </button>
   <div class="hint" id="hint"></div>
+
+  <section class="log" aria-labelledby="log-title">
+    <h2 id="log-title">Switch history</h2>
+    <ul id="log-list"></ul>
+    <div class="empty" id="log-empty">No switches yet.</div>
+  </section>
 </main>
 
 <script>
   // ============================================================
-  // STEP 1: Paste your Firebase Realtime Database URL between the
-  // quotes. No trailing slash. Example:
-  //   https://my-project-default-rtdb.firebaseio.com
+  // Your Firebase Realtime Database URL (no trailing slash).
   // ============================================================
   var DB_URL = "https://cmdk-cbc8b-default-rtdb.firebaseio.com";
 
   var KEY = "cm-dk-toggle";
-  var ENDPOINT = DB_URL.replace(/\/+$/, "") + "/toggle.json";
+  var BASE = DB_URL.replace(/\/+$/, "");
+  var ENDPOINT = BASE + "/toggle.json";
+  var LOG_QUERY = "?orderBy=%22%24key%22&limitToLast=50";
+  var LOG_ENDPOINT = BASE + "/log.json";
+  var LOG_STREAM = BASE + "/log.json" + LOG_QUERY;
   var configured = DB_URL.indexOf("http") === 0;
 
   var sw = document.getElementById("switch");
   var readout = document.getElementById("readout");
   var hint = document.getElementById("hint");
+  var logList = document.getElementById("log-list");
+  var logEmpty = document.getElementById("log-empty");
 
   var isDK = false;
   var writing = false;
+  var logState = {};
 
   function loadLocal() {
     try { return localStorage.getItem(KEY) === "DK"; } catch (e) { return false; }
@@ -158,8 +212,72 @@
     saveLocal(value === "DK");
   }
 
+  // ---- Switch history -------------------------------------------------
+  function formatTime(ms) {
+    var d = new Date(ms);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) +
+      ", " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  }
+  function renderLog() {
+    var items = [];
+    Object.keys(logState).forEach(function (id) {
+      var e = logState[id];
+      if (e && typeof e.t === "number" && (e.was === "CM" || e.was === "DK")) items.push(e);
+    });
+    items.sort(function (a, b) { return b.t - a.t; });
+    logList.textContent = "";
+    items.forEach(function (e) {
+      var li = document.createElement("li");
+      var when = document.createElement("span");
+      when.className = "when";
+      when.textContent = formatTime(e.t);
+      var was = document.createElement("span");
+      was.className = "was";
+      was.appendChild(document.createTextNode("was"));
+      var b = document.createElement("b");
+      b.textContent = e.was;
+      was.appendChild(b);
+      li.appendChild(when);
+      li.appendChild(was);
+      logList.appendChild(li);
+    });
+    logEmpty.hidden = items.length > 0;
+  }
+  function applyLogEvent(msg, merge) {
+    if (!msg || typeof msg.path !== "string") return;
+    if (msg.path === "/") {
+      if (merge && msg.data && typeof msg.data === "object") {
+        Object.keys(msg.data).forEach(function (k) {
+          if (msg.data[k] === null) delete logState[k]; else logState[k] = msg.data[k];
+        });
+      } else {
+        logState = (msg.data && typeof msg.data === "object") ? msg.data : {};
+      }
+    } else {
+      var id = msg.path.split("/")[1];
+      if (msg.data === null) delete logState[id]; else logState[id] = msg.data;
+    }
+    renderLog();
+  }
+  function fetchLog() {
+    return fetch(LOG_STREAM).then(function (r) { return r.json(); })
+      .then(function (data) { logState = data || {}; renderLog(); })
+      .catch(function () {});
+  }
+  function addLogEntry(previousValue) {
+    return fetch(LOG_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t: { ".sv": "timestamp" }, was: previousValue })
+    }).then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return fetchLog();
+    }).catch(function () {});
+  }
+
   // Start from the last value this browser saw, then sync.
   render(loadLocal());
+  renderLog();
 
   if (!configured) {
     setHint("Firebase is not set up yet. Saved on this device only.");
@@ -182,6 +300,8 @@
     }).then(function (res) {
       if (!res.ok) throw new Error("HTTP " + res.status);
       setHint("Shared with everyone who opens this page");
+      // Log what the switch was set to before this change.
+      return addLogEntry(previous ? "DK" : "CM");
     }).catch(function () {
       render(previous);
       saveLocal(previous);
@@ -191,12 +311,13 @@
     });
   });
 
-  // Live updates: Firebase streams changes over server-sent events.
+  // ---- Live updates (Firebase streams changes over server-sent events) ----
   function startPolling() {
     function poll() {
       fetch(ENDPOINT).then(function (r) { return r.json(); })
         .then(applyRemote)
         .catch(function () {});
+      fetchLog();
     }
     poll();
     setInterval(poll, 4000);
@@ -204,18 +325,34 @@
 
   function startStream() {
     if (!window.EventSource) { startPolling(); return; }
-    var es = new EventSource(ENDPOINT);
-    es.addEventListener("put", function (ev) {
+
+    var failed = false;
+    function fail() {
+      if (failed) return;
+      failed = true;
+      try { toggleStream.close(); } catch (e) {}
+      try { logStream.close(); } catch (e) {}
+      startPolling(); // fall back if streaming is blocked
+    }
+
+    var toggleStream = new EventSource(ENDPOINT);
+    toggleStream.addEventListener("put", function (ev) {
       try {
         var msg = JSON.parse(ev.data);
         if (msg && msg.path === "/") applyRemote(msg.data);
         setHint("Shared with everyone who opens this page");
       } catch (e) {}
     });
-    es.onerror = function () {
-      es.close();
-      startPolling(); // fall back if streaming is blocked
-    };
+    toggleStream.onerror = fail;
+
+    var logStream = new EventSource(LOG_STREAM);
+    logStream.addEventListener("put", function (ev) {
+      try { applyLogEvent(JSON.parse(ev.data), false); } catch (e) {}
+    });
+    logStream.addEventListener("patch", function (ev) {
+      try { applyLogEvent(JSON.parse(ev.data), true); } catch (e) {}
+    });
+    logStream.onerror = fail;
   }
 
   if (configured) startStream();
