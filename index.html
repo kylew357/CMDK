@@ -1,10 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CM DK Switch</title>
-<meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;800&family=DM+Mono:wght@400;500&display=swap">
 <style>
-  /* Layout: one centered switch with the active pair shown large above it. */
   :root {
     --bg: #eceef1;
     --fg: #14171c;
@@ -16,26 +19,20 @@
     --font-mono: "DM Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
   }
   @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
+    :root {
       --bg: #12151a; --fg: #eef0f3; --muted: #939bab;
       --track: #262b34; --knob: #3a4252; --accent: #7a9bff;
       color-scheme: dark;
     }
   }
-  :root[data-theme="dark"] {
-    --bg: #12151a; --fg: #eef0f3; --muted: #939bab;
-    --track: #262b34; --knob: #3a4252; --accent: #7a9bff;
-    color-scheme: dark;
-  }
 
-  html, body { height: 100%; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
   body {
     background: var(--bg);
     color: var(--fg);
     font-family: var(--font-display);
-    padding-block: 24px;
-    padding-left: max(16px, env(safe-area-inset-left, 0px));
-    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding: 24px 16px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -53,7 +50,6 @@
     letter-spacing: -0.04em;
     line-height: 0.9;
     color: var(--accent);
-    transition: color 0.2s ease;
   }
   .switch {
     position: relative;
@@ -99,11 +95,31 @@
     font-size: 0.8125rem;
     color: var(--muted);
     letter-spacing: 0.04em;
+    text-align: center;
+  }
+  /* Phones: fill the screen width with a much bigger readout and switch. */
+  @media (max-width: 600px) {
+    body { padding: 16px 12px; }
+    main { width: 100%; gap: 72px; }
+    .readout { font-size: 54vw; }
+    .switch {
+      width: 100%;
+      height: 220px;
+      padding: 14px;
+    }
+    .knob {
+      top: 14px; bottom: 14px; left: 14px;
+      width: calc(50% - 14px);
+    }
+    .label { font-size: 5rem; }
+    .hint { font-size: 1.125rem; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .knob, .label, .readout { transition: none; }
+    .knob, .label { transition: none; }
   }
 </style>
+</head>
+<body>
 
 <main>
   <div class="readout" id="readout" aria-live="polite">CM</div>
@@ -112,18 +128,26 @@
     <span class="label label-cm">CM</span>
     <span class="label label-dk">DK</span>
   </button>
-  <div class="hint" id="hint">Saved on this device</div>
+  <div class="hint" id="hint"></div>
 </main>
 
 <script>
+  // ============================================================
+  // STEP 1: Paste your Firebase Realtime Database URL between the
+  // quotes. No trailing slash. Example:
+  //   https://my-project-default-rtdb.firebaseio.com
+  // ============================================================
+  var DB_URL = "PASTE_YOUR_DATABASE_URL_HERE";
+
   var KEY = "cm-dk-toggle";
+  var ENDPOINT = DB_URL.replace(/\/+$/, "") + "/toggle.json";
+  var configured = DB_URL.indexOf("http") === 0;
+
   var sw = document.getElementById("switch");
   var readout = document.getElementById("readout");
   var hint = document.getElementById("hint");
 
-  var isDK = false;      // what the page currently shows
-  var sharedDK = false;  // last value confirmed by the shared store
-  var shared = null;     // the shared doc ref, or null when unavailable
+  var isDK = false;
   var writing = false;
 
   function loadLocal() {
@@ -138,51 +162,74 @@
     readout.textContent = v ? "DK" : "CM";
   }
   function setHint(t) { hint.textContent = t; }
+  function applyRemote(value) {
+    if (value !== "CM" && value !== "DK") return; // empty or invalid: ignore
+    if (writing) return;
+    render(value === "DK");
+    saveLocal(value === "DK");
+  }
 
+  // Start from the last value this browser saw, then sync.
   render(loadLocal());
-  setHint("Saved on this device");
 
-  sw.addEventListener("click", async function () {
+  if (!configured) {
+    setHint("Firebase is not set up yet. Saved on this device only.");
+  } else {
+    setHint("Connecting...");
+  }
+
+  sw.addEventListener("click", function () {
     var next = !isDK;
+    var previous = isDK;
     render(next);
     saveLocal(next);
-    if (!shared) return;
-    if (writing) return;
+    if (!configured) return;
+
     writing = true;
-    try {
-      await shared.set({ value: next ? "DK" : "CM" });
-      sharedDK = next;
+    fetch(ENDPOINT, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(next ? "DK" : "CM")
+    }).then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
       setHint("Shared with everyone who opens this page");
-    } catch (e) {
-      render(sharedDK);
-      saveLocal(sharedDK);
-      setHint("Could not save for everyone. Ask the owner for Contributor access.");
-    }
-    writing = false;
+    }).catch(function () {
+      render(previous);
+      saveLocal(previous);
+      setHint("Could not save. Check your Firebase rules and database URL.");
+    }).then(function () {
+      writing = false;
+    });
   });
 
-  (async function init() {
-    var db = null, user = null;
-    try { db = await claude.use("db"); } catch (e) {}
-    try { user = await claude.use("user"); } catch (e) {}
-    if (!db) return;
-    shared = db.doc("toggle/state");
-    var canWrite = user ? user.can("data.write") : null;
-    if (canWrite === false) {
-      sw.disabled = true;
-      sw.style.cursor = "default";
-      setHint("View only. Everyone sees the same setting.");
-    } else {
-      setHint("Shared with everyone who opens this page");
+  // Live updates: Firebase streams changes over server-sent events.
+  function startPolling() {
+    function poll() {
+      fetch(ENDPOINT).then(function (r) { return r.json(); })
+        .then(applyRemote)
+        .catch(function () {});
     }
-    shared.onSnapshot(function (snap) {
-      if (!snap.exists) return;
-      var d = snap.data() || {};
-      sharedDK = d.value === "DK";
-      if (!writing) { render(sharedDK); saveLocal(sharedDK); }
-    }, function () {
-      shared = null;
-      setHint("Saved on this device");
+    poll();
+    setInterval(poll, 4000);
+  }
+
+  function startStream() {
+    if (!window.EventSource) { startPolling(); return; }
+    var es = new EventSource(ENDPOINT);
+    es.addEventListener("put", function (ev) {
+      try {
+        var msg = JSON.parse(ev.data);
+        if (msg && msg.path === "/") applyRemote(msg.data);
+        setHint("Shared with everyone who opens this page");
+      } catch (e) {}
     });
-  })();
+    es.onerror = function () {
+      es.close();
+      startPolling(); // fall back if streaming is blocked
+    };
+  }
+
+  if (configured) startStream();
 </script>
+</body>
+</html>
